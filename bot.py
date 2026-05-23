@@ -67,20 +67,34 @@ def fetch_video_metadata(url):
 def download_media(url, quality, file_name):
     """
     Actual extraction protocol running in background thread.
+    Handles both Video resolutions and MP3 Audio.
     """
-    format_string = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best'
-    
-    ydl_opts = {
-        'format': format_string,
-        'outtmpl': file_name,
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'nocheckcertificate': True,
-        'socket_timeout': 30,
-        'retries': 5,
-        'merge_output_format': 'mp4',
-    }
+    if quality == 'mp3':
+        # Audio Only Setup
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': file_name,
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            'socket_timeout': 30,
+            'retries': 5,
+        }
+    else:
+        # Video + Audio Setup
+        format_string = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best'
+        ydl_opts = {
+            'format': format_string,
+            'outtmpl': file_name,
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            'socket_timeout': 30,
+            'retries': 5,
+            'merge_output_format': 'mp4',
+        }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -147,6 +161,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- DYNAMIC TACTICAL UI BUILDER ---
     keyboard = []
+    
+    # Video Options
     for res in options:
         if res >= 2160:
             label = f"[ 🌌 {res}p | 4K ULTRA OMEGA ]"
@@ -160,6 +176,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             label = f"[ 🔋 {res}p | OPTIMIZED BANDWIDTH ]"
         
         keyboard.append([InlineKeyboardButton(label, callback_data=str(res))])
+
+    # Audio Option (MP3)
+    keyboard.append([InlineKeyboardButton("[ 🎵 High-Res MP3 Audio ]", callback_data="mp3")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -193,15 +212,18 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN
     )
 
-    # Unique ID generation
+    # Unique ID generation & File Extension Check
+    is_audio = (quality == 'mp3')
+    ext = 'mp3' if is_audio else 'mp4'
     unique_id = str(uuid.uuid4())[:8]
-    file_name = f'payload_{chat_id}_{unique_id}.mp4'
+    file_name = f'payload_{chat_id}_{unique_id}.{ext}'
 
     # Step 2: Extraction Phase
+    extraction_text = "\\[📥 ACQUIRING PAYLOAD] Extracting audio waves..." if is_audio else f"\\[📥 ACQUIRING PAYLOAD] Extracting neural net data at {quality}p..."
     await context.bot.edit_message_text(
         chat_id=chat_id, 
         message_id=status_message.message_id, 
-        text=f"\\[📥 ACQUIRING PAYLOAD] Extracting neural net data at {quality}p...\n⚠️ _Background extraction active. Do not terminate connection._",
+        text=f"{extraction_text}\n⚠️ _Background extraction active. Do not terminate connection._",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -231,22 +253,34 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         try:
-            with open(file_name, 'rb') as video:
-                await context.bot.send_video(
-                    chat_id=chat_id,
-                    video=video,
-                    caption=(
-                        f"✅ *TACTICAL EXTRACTION COMPLETE*\n\n"
-                        f"▫️ **Asset Resolution:** {quality}p\n"
-                        f"▫️ **Payload Mass:** {file_size_mb:.1f} MB\n"
-                        f"▫️ **Security Status:** CLEARED\n\n"
-                        f"🛡️ **Commanded by:** ZORK DI"
-                    ),
-                    parse_mode=ParseMode.MARKDOWN,
-                    supports_streaming=True,
-                    read_timeout=120, 
-                    write_timeout=120 
+            with open(file_name, 'rb') as media_file:
+                caption_text = (
+                    f"✅ *TACTICAL EXTRACTION COMPLETE*\n\n"
+                    f"▫️ **Asset Type:** {'MP3 Audio' if is_audio else f'{quality}p Video'}\n"
+                    f"▫️ **Payload Mass:** {file_size_mb:.1f} MB\n"
+                    f"▫️ **Security Status:** CLEARED\n\n"
+                    f"🛡️ **Commanded by:** ZORK DI"
                 )
+
+                if is_audio:
+                    await context.bot.send_audio(
+                        chat_id=chat_id,
+                        audio=media_file,
+                        caption=caption_text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        read_timeout=120, 
+                        write_timeout=120 
+                    )
+                else:
+                    await context.bot.send_video(
+                        chat_id=chat_id,
+                        video=media_file,
+                        caption=caption_text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        supports_streaming=True,
+                        read_timeout=120, 
+                        write_timeout=120 
+                    )
             
             # Wipe telemetry logs after successful operation
             await context.bot.delete_message(chat_id=chat_id, message_id=status_message.message_id)
@@ -255,7 +289,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.edit_message_text(
                 chat_id=chat_id, 
                 message_id=status_message.message_id, 
-                text=f"❌ *\\[UPLINK FAILED]*\nSignal interference during payload delivery. Transmission dropped. Try again.",
+                text=f"❌ *\\[UPLINK FAILED]*\nSignal interference during payload delivery. Transmission dropped. Try again.\n\nError: {e}",
                 parse_mode=ParseMode.MARKDOWN
             )
         finally:
