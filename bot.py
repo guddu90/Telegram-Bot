@@ -28,17 +28,32 @@ def run_server():
 # --- BOT CONFIGURATION ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
+# --- YOUTUBE ANTI-BLOCK SYSTEM ---
+def get_base_ydl_opts():
+    """
+    Smart config function: Sets up client spoofing and uses cookies.txt if available.
+    """
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'nocheckcertificate': True,
+        # Android aur Web client ko spoof kar rahe hain taaki bot block na ho
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+    }
+    # Agar cookies.txt file exist karti hai, toh bot automatically use karega
+    if os.path.exists('cookies.txt'):
+        opts['cookiefile'] = 'cookies.txt'
+    return opts
+
 # --- CORE DOWNLOADING & METADATA FUNCTIONS ---
 def fetch_video_metadata(url):
     """
     Smart Background Process: Extracts video metadata and available dynamic resolutions.
     Detects 4K, 2K, 1080p based on actual availability.
     """
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-    }
+    ydl_opts = get_base_ydl_opts()
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -67,34 +82,21 @@ def fetch_video_metadata(url):
 def download_media(url, quality, file_name):
     """
     Actual extraction protocol running in background thread.
-    Handles both Video resolutions and MP3 Audio.
+    Handles both Video resolutions and MP3 Audio with Anti-Block features.
     """
+    ydl_opts = get_base_ydl_opts()
+    ydl_opts['outtmpl'] = file_name
+    ydl_opts['socket_timeout'] = 30
+    ydl_opts['retries'] = 5
+
     if quality == 'mp3':
         # Audio Only Setup
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': file_name,
-            'quiet': True,
-            'no_warnings': True,
-            'noplaylist': True,
-            'nocheckcertificate': True,
-            'socket_timeout': 30,
-            'retries': 5,
-        }
+        ydl_opts['format'] = 'bestaudio/best'
     else:
         # Video + Audio Setup
         format_string = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best'
-        ydl_opts = {
-            'format': format_string,
-            'outtmpl': file_name,
-            'quiet': True,
-            'no_warnings': True,
-            'noplaylist': True,
-            'nocheckcertificate': True,
-            'socket_timeout': 30,
-            'retries': 5,
-            'merge_output_format': 'mp4',
-        }
+        ydl_opts['format'] = format_string
+        ydl_opts['merge_output_format'] = 'mp4'
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
