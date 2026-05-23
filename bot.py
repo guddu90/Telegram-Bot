@@ -40,6 +40,8 @@ def fetch_video_metadata(url):
         'noplaylist': True,
         # Anti-Bot Bypass: Spoofing request as an Android/iOS Client
         'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+        # Real Account Cookies for 100% Bypass
+        'cookiefile': 'cookies.txt',
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -82,8 +84,9 @@ def download_media(url, quality, file_name):
             'nocheckcertificate': True,
             'socket_timeout': 30,
             'retries': 5,
-            # Anti-Bot Bypass
+            # Anti-Bot Bypass & Cookies
             'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+            'cookiefile': 'cookies.txt',
         }
     else:
         # Video + Audio Setup (Pre-merged formats to bypass FFmpeg missing error on Render)
@@ -98,8 +101,9 @@ def download_media(url, quality, file_name):
             'nocheckcertificate': True,
             'socket_timeout': 30,
             'retries': 5,
-            # Anti-Bot Bypass
+            # Anti-Bot Bypass & Cookies
             'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+            'cookiefile': 'cookies.txt',
         }
 
     try:
@@ -332,7 +336,8 @@ def main():
     application.add_handler(CallbackQueryHandler(button_click))
 
     print("🛡️ [ZORK DI MAINFRAME ONLINE] Scanning grid for communications...")
-    application.run_polling()
+    # FIX: drop_pending_updates=True conflict ko hamesha ke liye rokk dega
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
