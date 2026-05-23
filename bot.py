@@ -8,27 +8,65 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 import yt_dlp
+from dotenv import load_dotenv
+
+# --- LOCAL ENVIRONMENT SETUP ---
+# Yeh local PC par testing ke liye .env file se token uthayega
+load_dotenv()
 
 # --- FLASK SERVER (Render.com 24/7 Setup) ---
 app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "ZORK DI Media Extraction Node is ACTIVE and running at elite capacity."
+    return "[SYSTEM STATUS: ONLINE] ZORK DI Tactical Extraction Node is running at optimal capacity."
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
 # --- BOT CONFIGURATION ---
-# Token environment variable se lega, agar nahi mila toh default fallback use karega
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8352970733:AAEUrMk-cUY0su4yygscDHAGLBN_2XaGZ7k")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-# --- CORE DOWNLOADING FUNCTION (Runs in Background) ---
+# --- CORE DOWNLOADING & METADATA FUNCTIONS ---
+def fetch_video_metadata(url):
+    """
+    Smart Background Process: Extracts video metadata and available dynamic resolutions.
+    Detects 4K, 2K, 1080p based on actual availability.
+    """
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            formats = info.get('formats', [])
+            
+            # Scan for all available unique heights (resolutions)
+            resolutions = set()
+            for f in formats:
+                height = f.get('height')
+                vcodec = f.get('vcodec')
+                if height and vcodec != 'none':
+                    resolutions.add(height)
+            
+            # Sort descending to show highest quality first
+            sorted_res = sorted(list(resolutions), reverse=True)
+            
+            # Keep up to top 4 highest unique resolutions to maintain a premium UI
+            available_options = sorted_res[:4]
+
+            # Get video title safely
+            title = info.get('title', 'Classified Asset')
+            return True, available_options, title
+    except Exception as e:
+        return False, str(e), None
+
 def download_media(url, quality, file_name):
     """
-    Yeh function yt-dlp ko chalayega. Ise hum thread mein run karenge taaki bot hang na ho.
-    Universal platform support ke liye format strictly best available filter karega.
+    Actual extraction protocol running in background thread.
     """
     format_string = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best'
     
@@ -41,7 +79,7 @@ def download_media(url, quality, file_name):
         'nocheckcertificate': True,
         'socket_timeout': 30,
         'retries': 5,
-        'merge_output_format': 'mp4', # Ensure final output is mp4
+        'merge_output_format': 'mp4',
     }
 
     try:
@@ -54,10 +92,12 @@ def download_media(url, quality, file_name):
 # --- HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "⚡ *ZORK DI Secure Node Connected*\n\n"
-        "Greetings. I am the advanced *Media Extraction Framework*.\n"
-        "Engineered for high-performance, universal media retrieval across all major grids (YouTube, X, Instagram, Facebook).\n\n"
-        "🔗 *Directive:* Please drop a valid URL to initiate the secure retrieval sequence."
+        "📟 `\\[SYSTEM BOOT SEQUENCE INITIATED]`\n"
+        "📡 `\\[CONNECTING TO ZORK DI MAINFRAME...]`\n"
+        "🔐 `\\[SECURE HANDSHAKE: SUCCESS]`\n\n"
+        "Greetings, Operator. I am the *Tactical Media Extraction Node*.\n"
+        "Engineered for high-tier payload retrieval across global network grids.\n\n"
+        "📍 *Directive:* Transmit target coordinates (URL) to initiate surveillance."
     )
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -65,24 +105,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
 
     # --- ZORK DI IDENTITY LOGIC (Smart Personality) ---
-    identity_keywords = ["who made you", "creator", "naam kya hai", "who are you", "zork di", "banaya kisne", "boss"]
+    identity_keywords = ["who made you", "creator", "naam kya hai", "who are you", "zork di", "banaya kisne", "boss", "command"]
     if any(keyword in text for keyword in identity_keywords):
         identity_text = (
-            "🛡️ *Identity Confirmed.*\n\n"
-            "I am an elite AI extraction protocol, engineered by the masterminds at *ZORK DI*.\n"
-            "My intelligence outpaces standard bots, designed strictly for high-end, fail-proof media retrieval.\n\n"
-            "Awaiting your command, Sir."
+            "🛡️ *\\[CLEARANCE LEVEL VERIFIED]*\n\n"
+            "I am an elite cybernetic extraction protocol, forged by the architects at *ZORK DI*.\n"
+            "My neural processing outpaces civilian models. I exist to execute flawless data retrieval.\n\n"
+            "Awaiting your next directive, Commander."
         )
         await update.message.reply_text(identity_text, parse_mode=ParseMode.MARKDOWN)
         return
 
     # --- SMART URL EXTRACTION ---
-    # Koi text ke beech mein bhi link dega toh bot nikal lega
     url_pattern = re.search(r'(https?://[^\s]+)', update.message.text)
     
     if not url_pattern:
         await update.message.reply_text(
-            "⚠️ *System Alert:* No valid protocol detected.\nPlease provide a verified HTTP/HTTPS URL.", 
+            "⚠️ *\\[CRITICAL ALERT]*\nInvalid coordinates detected. Radar scan failed to locate a verified protocol. Please recalibrate.", 
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -90,16 +129,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = url_pattern.group(1)
     context.user_data['video_url'] = url
 
-    # --- VERTICAL ENTERPRISE UI (Premium Look) ---
-    keyboard = [
-        [InlineKeyboardButton("✨ 1080p  |  ULTRA HD EXTRACTION", callback_data='1080')],
-        [InlineKeyboardButton("⚡ 720p   |  STANDARD HD SEQUENCE", callback_data='720')],
-        [InlineKeyboardButton("🔋 480p   |  OPTIMIZED PAYLOAD", callback_data='480')]
-    ]
+    # --- DYNAMIC RADAR SCAN PHASE ---
+    scan_msg = await update.message.reply_text(
+        "📡 *\\[RADAR ACTIVE]*\nScanning target coordinates for available payload densities. Please wait...", 
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    # Fetch available resolutions and title dynamically
+    success, options, title = await asyncio.to_thread(fetch_video_metadata, url)
+
+    if not success or not options:
+        await scan_msg.edit_text(
+            f"❌ *\\[TARGET EVASIVE]*\nUnable to penetrate server firewalls. Asset might be private, geo-restricted, or unsupported.\n\n_System Diagnostics: {options}_",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    # --- DYNAMIC TACTICAL UI BUILDER ---
+    keyboard = []
+    for res in options:
+        if res >= 2160:
+            label = f"[ 🌌 {res}p | 4K ULTRA OMEGA ]"
+        elif res >= 1440:
+            label = f"[ ☄️ {res}p | 2K QUAD HD ]"
+        elif res >= 1080:
+            label = f"[ 🛰️ {res}p | MAXIMUM OVERRIDE ]"
+        elif res >= 720:
+            label = f"[ ⚡ {res}p | STANDARD PROTOCOL ]"
+        else:
+            label = f"[ 🔋 {res}p | OPTIMIZED BANDWIDTH ]"
+        
+        keyboard.append([InlineKeyboardButton(label, callback_data=str(res))])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(
-        "🎯 *Target Locked.*\nSelect the desired resolution for payload extraction:", 
+    # Clean title for Markdown formatting
+    safe_title = title.replace('*', '').replace('_', '').replace('[', '').replace(']', '').replace('`', '')
+
+    await scan_msg.edit_text(
+        f"🎯 *\\[TARGET LOCKED]*\n*Asset:* `{safe_title}`\n\nSelect payload density for immediate extraction:", 
         reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN
     )
@@ -114,52 +182,51 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not url:
         await query.edit_message_text(
-            "❌ *System Fault:* Target URL purged from memory. Please re-initialize the request.",
+            "❌ *\\[SYSTEM FAULT]*\nTarget URL purged from temporary memory to prevent tracing. Re-initialize the sequence.",
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
-    # Step 1: Initialize (Jarvis Style)
+    # Step 1: Initialize
     status_message = await query.edit_message_text(
-        f"\[⚙️ INITIALIZING] Analyzing target coordinates...\n"
-        f"\[🔍 BYPASSING] Negotiating server security protocols...",
+        f"\\[⚙️ COMMAND RECOGNIZED]\nRunning tactical analysis on target coordinates...\n\\[🔍 BYPASSING] Neutralizing host security layers...",
         parse_mode=ParseMode.MARKDOWN
     )
 
-    # Unique file name to prevent clash between concurrent users
+    # Unique ID generation
     unique_id = str(uuid.uuid4())[:8]
     file_name = f'payload_{chat_id}_{unique_id}.mp4'
 
-    # Step 2: Extraction
+    # Step 2: Extraction Phase
     await context.bot.edit_message_text(
         chat_id=chat_id, 
         message_id=status_message.message_id, 
-        text=f"\[📥 EXTRACTING] Downloading {quality}p neural payload...\n⚠️ _Please stand by, background thread active._",
+        text=f"\\[📥 ACQUIRING PAYLOAD] Extracting neural net data at {quality}p...\n⚠️ _Background extraction active. Do not terminate connection._",
         parse_mode=ParseMode.MARKDOWN
     )
 
-    # RUNNING IN BACKGROUND THREAD (Bot won't freeze)
+    # Background Thread execution
     success, error_msg = await asyncio.to_thread(download_media, url, quality, file_name)
 
     if success and os.path.exists(file_name):
         file_size_mb = os.path.getsize(file_name) / (1024 * 1024)
 
-        # Telegram Limit Check (50 MB)
+        # Telegram 50MB Limit Check
         if file_size_mb > 49.5:
             await context.bot.edit_message_text(
                 chat_id=chat_id, 
                 message_id=status_message.message_id, 
-                text=f"🛑 *Limit Exceeded:*\nThe extracted file is {file_size_mb:.1f} MB. Telegram restricts bots to a maximum of 50 MB uploads.\n_Task Aborted._",
+                text=f"🛑 *\\[RESTRICTION ENFORCED]*\nPayload mass is {file_size_mb:.1f} MB. Telegram grid restricts transmissions to 50 MB.\n_Mission Aborted. Wiping localized data._",
                 parse_mode=ParseMode.MARKDOWN
             )
             os.remove(file_name)
             return
 
-        # Step 3: Uploading
+        # Step 3: Secure Uplink
         await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=status_message.message_id, 
-            text="\[🚀 UPLOADING] Encryption complete. Establishing secure uplink to Telegram...",
+            text="\\[📡 ESTABLISHING UPLINK]\nEncryption algorithm: AES-256 applied. Uploading payload to secure Telegram grid...",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -169,10 +236,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=chat_id,
                     video=video,
                     caption=(
-                        f"✅ *Extraction Successful*\n"
-                        f"▫️ **Resolution:** {quality}p\n"
-                        f"▫️ **Size:** {file_size_mb:.1f} MB\n"
-                        f"🛡️ **Powered by:** ZORK DI"
+                        f"✅ *TACTICAL EXTRACTION COMPLETE*\n\n"
+                        f"▫️ **Asset Resolution:** {quality}p\n"
+                        f"▫️ **Payload Mass:** {file_size_mb:.1f} MB\n"
+                        f"▫️ **Security Status:** CLEARED\n\n"
+                        f"🛡️ **Commanded by:** ZORK DI"
                     ),
                     parse_mode=ParseMode.MARKDOWN,
                     supports_streaming=True,
@@ -180,45 +248,50 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     write_timeout=120 
                 )
             
-            # Clean up logs after success
+            # Wipe telemetry logs after successful operation
             await context.bot.delete_message(chat_id=chat_id, message_id=status_message.message_id)
             
         except Exception as e:
             await context.bot.edit_message_text(
                 chat_id=chat_id, 
                 message_id=status_message.message_id, 
-                text=f"❌ *Upload Failed:*\nNetwork error during payload delivery. Please try again.",
+                text=f"❌ *\\[UPLINK FAILED]*\nSignal interference during payload delivery. Transmission dropped. Try again.",
                 parse_mode=ParseMode.MARKDOWN
             )
         finally:
-            # File deletion to keep server space clean (Important for Render.com)
+            # Clean up local node space
             if os.path.exists(file_name):
                 os.remove(file_name)
 
     else:
-        # Handling yt-dlp extraction failure cleanly
+        # Handling extraction failures (Private/Geo-blocked)
         await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=status_message.message_id, 
-            text=f"❌ *Extraction Failed.*\nTarget platform might have blocked the request or URL is private/geo-restricted.\n\n_System Diagnostics: {error_msg}_",
+            text=f"❌ *\\[TARGET EVASIVE]*\nPlatform defense systems blocked the request, or the intel is classified.\n\n_Diagnostic Code: {error_msg}_",
             parse_mode=ParseMode.MARKDOWN
         )
 
 def main():
-    # Start Flask Server
+    # Validating environment integrity
+    if not BOT_TOKEN:
+        print("❌ [CRITICAL SYSTEM FAILURE]: BOT_TOKEN is missing! Provide coordinates via .env file or Render Environment Variables.")
+        return
+
+    # Booting daemon server
     server_thread = threading.Thread(target=run_server)
     server_thread.daemon = True
     server_thread.start()
 
-    # Build Application
+    # Initializing Mainframe
     application = Application.builder().token(BOT_TOKEN).pool_timeout(60).connect_timeout(60).read_timeout(60).write_timeout(60).build()
 
-    # Register Handlers
+    # Deploying Protocol Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_click))
 
-    print("🛡️ ZORK DI Core System ONLINE. Intercepting communications...")
+    print("🛡️ [ZORK DI MAINFRAME ONLINE] Scanning grid for communications...")
     application.run_polling()
 
 if __name__ == '__main__':
