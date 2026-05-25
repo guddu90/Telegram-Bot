@@ -28,37 +28,39 @@ def run_server():
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 # --- CORE DOWNLOADING & METADATA FUNCTIONS ---
-def get_base_ydl_opts():
-    """Base options customized for MAXIMUM SPEED, Anti-Hang and Render Bypass"""
+def get_base_ydl_opts(is_metadata=False):
+    """Base options customized for Reliability & Anti-Freeze"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
-        'socket_timeout': 15,  
-        'retries': 3,
-        'extractor_retries': 2,
+        'socket_timeout': 20, # Fixed standard timeout
+        'retries': 2,
+        'extractor_retries': 1,
         'nocheckcertificate': True,
         'geo_bypass': True,
-        'source_address': '0.0.0.0', 
-        'concurrent_fragment_downloads': 10, # ROCKET SPEED DOWNLOAD FIX
+        # Removed concurrent fragments to stop YouTube tarpit
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv', 'ios', 'android', 'web'] 
+                'player_client': ['tv', 'ios', 'android', 'web']
             }
         },
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Sec-Fetch-Mode': 'navigate'
         }
     }
+    
+    if is_metadata:
+        opts['extract_flat'] = False 
+        opts['compat_opts'] = ['no-youtube-unavailable-videos']
     
     if os.path.exists('cookies.txt'):
         opts['cookiefile'] = 'cookies.txt'
     return opts
 
 def fetch_video_metadata(url):
-    ydl_opts = get_base_ydl_opts()
+    ydl_opts = get_base_ydl_opts(is_metadata=True)
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -72,25 +74,24 @@ def fetch_video_metadata(url):
                 if height and vcodec != 'none':
                     resolutions.add(height)
             
-            if resolutions:
-                sorted_res = sorted(list(resolutions), reverse=True)[:4]
-            else:
-                # Default safety fallback if formats are hidden
-                sorted_res = [1080, 720, 480]
+            sorted_res = sorted(list(resolutions), reverse=True)
+            available_options = sorted_res[:4]
 
             title = info.get('title', 'Classified Asset')
-            return True, sorted_res, title
+            return True, available_options, title
     except Exception as e:
         return False, str(e), None
 
 def download_media(url, quality, file_name):
-    ydl_opts = get_base_ydl_opts()
+    ydl_opts = get_base_ydl_opts(is_metadata=False)
     ydl_opts['outtmpl'] = file_name
 
     if quality == 'mp3':
         ydl_opts['format'] = 'bestaudio/best'
     else:
-        ydl_opts['format'] = f'best[height<={quality}][ext=mp4]/best[ext=mp4]/best'
+        # STRICT FALLBACK: Forces pre-merged mp4 (b means best with video+audio). 
+        # Prevents FFmpeg merge hangs on Render.com
+        ydl_opts['format'] = f'b[height<={quality}][ext=mp4]/b[ext=mp4]/best'
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -136,7 +137,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = url_pattern.group(1)
     
-    # X.COM FIX: Auto conversion
     if "x.com" in url:
         url = url.replace("x.com", "twitter.com")
         
@@ -147,20 +147,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN
     )
 
-    # ANTI-HANG ZERO-WAIT FALLBACK SYSTEM
-    # Agar 8 second ke andar scan complete nahi hua, toh seedha bypass maar ke menu dega
     try:
         success, options, title = await asyncio.wait_for(
-            asyncio.to_thread(fetch_video_metadata, url), timeout=8.0
+            asyncio.to_thread(fetch_video_metadata, url), timeout=30.0
         )
     except asyncio.TimeoutError:
-        success = True
-        options = [1080, 720, 480]  # Instant fallback options
-        title = "Encrypted Asset (Bypassed Scan)"
+         await scan_msg.edit_text(
+            "❌ *\\[RADAR TIMEOUT]*\nConnection to target server timed out. System force-terminated to prevent freezing.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+         return
 
     if not success or not options:
         await scan_msg.edit_text(
-            f"❌ *\\[TARGET EVASIVE]*\nUnable to penetrate server firewalls. Asset might be private, geo-restricted, or blocked by platform.",
+            f"❌ *\\[TARGET EVASIVE]*\nUnable to penetrate server firewalls. Asset might be private, geo-restricted, or blocked by platform.\n\n_System Diagnostics: {options}_",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -218,14 +218,39 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.edit_message_text(
         chat_id=chat_id, 
         message_id=status_message.message_id, 
-        text=f"{extraction_text}\n⚡ _ROCKET MODE ENGAGED. HIGH-SPEED DOWNLOAD ACTIVE._",
+        text=f"{extraction_text}\n⚡ _STABLE EXTRACTION ACTIVE. BYPASSING FIREWALLS._",
         parse_mode=ParseMode.MARKDOWN
     )
 
-    success, error_msg = await asyncio.to_thread(download_media, url, quality, file_name)
+    try:
+        # Wrap download in wait_for to prevent infinite yt-dlp freezing
+        success, error_msg = await asyncio.wait_for(
+            asyncio.to_thread(download_media, url, quality, file_name), timeout=300.0
+        )
+    except asyncio.TimeoutError:
+         await context.bot.edit_message_text(
+            chat_id=chat_id, 
+            message_id=status_message.message_id, 
+            text="❌ *\\[DOWNLOAD TIMEOUT]*\nHost server is tarpitting the connection. Operation force-aborted to keep bot alive.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+         if os.path.exists(file_name):
+            os.remove(file_name)
+         return
 
     if success and os.path.exists(file_name):
         file_size_mb = os.path.getsize(file_name) / (1024 * 1024)
+
+        # Corrupt file protection
+        if file_size_mb < 0.1:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, 
+                message_id=status_message.message_id, 
+                text=f"❌ *\\[CORRUPT PAYLOAD]*\nAsset successfully extracted but payload mass is 0 MB. Target likely blocked the video stream.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            os.remove(file_name)
+            return
 
         if file_size_mb > 49.5:
             await context.bot.edit_message_text(
@@ -254,33 +279,45 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🛡️ **Commanded by:** ZORK DI"
                 )
 
+                # HARD TIMEOUT ON UPLOAD to prevent Twitter/Telegram hang
                 if is_audio:
-                    await context.bot.send_audio(
-                        chat_id=chat_id,
-                        audio=media_file,
-                        caption=caption_text,
-                        parse_mode=ParseMode.MARKDOWN,
-                        read_timeout=300, 
-                        write_timeout=300 
+                    await asyncio.wait_for(
+                        context.bot.send_audio(
+                            chat_id=chat_id,
+                            audio=media_file,
+                            caption=caption_text,
+                            parse_mode=ParseMode.MARKDOWN,
+                            read_timeout=120, 
+                            write_timeout=120 
+                        ), timeout=240.0
                     )
                 else:
-                    await context.bot.send_video(
-                        chat_id=chat_id,
-                        video=media_file,
-                        caption=caption_text,
-                        parse_mode=ParseMode.MARKDOWN,
-                        supports_streaming=True,
-                        read_timeout=300, 
-                        write_timeout=300 
+                    await asyncio.wait_for(
+                        context.bot.send_video(
+                            chat_id=chat_id,
+                            video=media_file,
+                            caption=caption_text,
+                            parse_mode=ParseMode.MARKDOWN,
+                            supports_streaming=True,
+                            read_timeout=120, 
+                            write_timeout=120 
+                        ), timeout=240.0
                     )
             
             await context.bot.delete_message(chat_id=chat_id, message_id=status_message.message_id)
             
+        except asyncio.TimeoutError:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, 
+                message_id=status_message.message_id, 
+                text=f"❌ *\\[UPLINK HANG]*\nTelegram server stopped responding during upload. Connection force-closed.",
+                parse_mode=ParseMode.MARKDOWN
+            )
         except Exception as e:
             await context.bot.edit_message_text(
                 chat_id=chat_id, 
                 message_id=status_message.message_id, 
-                text=f"❌ *\\[UPLINK FAILED]*\nSignal interference during payload delivery. Transmission dropped. Try again.\n\nError: {e}",
+                text=f"❌ *\\[UPLINK FAILED]*\nSignal interference during payload delivery. Transmission dropped.\n\nError: {e}",
                 parse_mode=ParseMode.MARKDOWN
             )
         finally:
@@ -297,20 +334,19 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not BOT_TOKEN:
-        print("❌ [CRITICAL SYSTEM FAILURE]: BOT_TOKEN is missing! Provide coordinates via .env file or Render Environment Variables.")
+        print("❌ [CRITICAL SYSTEM FAILURE]: BOT_TOKEN is missing!")
         return
 
     if os.path.exists('cookies.txt'):
         print("✅ [SYSTEM CHECK]: cookies.txt FOUND successfully in the directory.")
     else:
-        print("⚠️ [SYSTEM WARNING]: cookies.txt NOT FOUND! Ensure it is not ignored in .gitignore.")
+        print("⚠️ [SYSTEM WARNING]: cookies.txt NOT FOUND!")
 
     server_thread = threading.Thread(target=run_server)
     server_thread.daemon = True
     server_thread.start()
 
-    # GLOBAL TIMEOUT 300s TO STOP RANDOM HANGS
-    application = Application.builder().token(BOT_TOKEN).pool_timeout(60).connect_timeout(60).read_timeout(300).write_timeout(300).build()
+    application = Application.builder().token(BOT_TOKEN).pool_timeout(60).connect_timeout(60).read_timeout(120).write_timeout(120).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
