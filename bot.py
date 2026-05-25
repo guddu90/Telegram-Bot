@@ -35,16 +35,18 @@ async def fetch_from_cobalt(url):
     api_url = "https://api.cobalt.tools/api/json"
     headers = {
         "Accept": "application/json",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Origin": "https://cobalt.tools",
+        "Referer": "https://cobalt.tools/"
     }
     payload = {
         "url": url,
-        "vQuality": "max", # Automatically grabs the highest available resolution (4K, 1080p, whatever exists)
+        "vQuality": "max", # Automatically grabs the highest available resolution (4K, 1080p, etc.)
         "filenamePattern": "classic"
     }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(api_url, json=payload, headers=headers, timeout=15) as response:
+            async with session.post(api_url, json=payload, headers=headers, timeout=12) as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get("status") in ["redirect", "stream"]:
@@ -54,20 +56,23 @@ async def fetch_from_cobalt(url):
     return None
 
 def download_with_ytdlp(url, file_name):
-    """Fallback Engine: Uses optimized yt-dlp if API fails"""
+    """Fallback Engine: Uses highly optimized IPv4 yt-dlp if API fails"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
-        # BUG FIXED: Added ext= before m4a to resolve invalid filter specification
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': file_name,
-        'max_filesize': 49.5 * 1024 * 1024, # Stops Render server from hanging on massive files
+        'socket_timeout': 10,         # Force close connection if host server tarpits/freezes
+        'retries': 0,                  # Do not waste time retrying on blocked cloud IPs
+        'extractor_retries': 0,
+        'source_address': '0.0.0.0',   # CRITICAL FIX: Forces IPv4 to bypass Render's blocked IPv6 grid
+        'max_filesize': 49.5 * 1024 * 1024, 
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        },
-        'sleep_interval': 1,
-        'max_sleep_interval': 3
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5'
+        }
     }
     
     if os.path.exists('cookies.txt'):
@@ -118,13 +123,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = url_pattern.group(1)
     
-    # Twitter Fast-Route Fix
     if "x.com" in url:
         url = url.replace("x.com", "twitter.com")
 
     chat_id = update.message.chat_id
 
-    # Instant Action - No Buttons
     status_message = await update.message.reply_text(
         "🎯 *\\[TARGET LOCKED - INSTANT MODE]*\n"
         "\\[⚙️ COMMAND RECOGNIZED] Auto-detecting maximum available quality...\n"
@@ -155,13 +158,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_message.delete()
             return
         except Exception as e:
-            print(f"[DIRECT UPLOAD FAILED]: {e}. Falling back to deep extraction.")
+            print(f"[DIRECT UPLOAD FAILED]: {e}. Falling back to core extraction.")
 
-    # 2nd Attempt: yt-dlp Deep Extraction Fallback
+    # 2nd Attempt: yt-dlp Deep Extraction Fallback (Anti-Freeze Mode)
     await context.bot.edit_message_text(
         chat_id=chat_id,
         message_id=status_message.message_id,
-        text="⚠️ *\\[API EVADED]*\nTarget platform is resisting. Initiating deep extraction via backup engine...\n_Please hold, compiling maximum available format..._",
+        text="⚠️ *\\[API EVADED]*\nTarget platform is resisting. Initiating deep extraction via IPv4 engine...\n_Please hold, compiling maximum available format..._",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -169,14 +172,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = f'payload_{chat_id}_{unique_id}.mp4'
 
     try:
+        # Reduced timeout to 45 seconds to prevent infinite bot freezing
         success, error_msg = await asyncio.wait_for(
-            asyncio.to_thread(download_with_ytdlp, url, file_name), timeout=300.0
+            asyncio.to_thread(download_with_ytdlp, url, file_name), timeout=45.0
         )
     except asyncio.TimeoutError:
         await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=status_message.message_id, 
-            text="❌ *\\[DOWNLOAD TIMEOUT]*\nHost server is tarpitting the connection. Operation force-aborted.",
+            text="❌ *\\[DOWNLOAD TIMEOUT]*\nHost server is tarpitting the connection or file is too massive. Operation force-aborted to keep bot alive.",
             parse_mode=ParseMode.MARKDOWN
         )
         if os.path.exists(file_name):
@@ -190,7 +194,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.edit_message_text(
                 chat_id=chat_id, 
                 message_id=status_message.message_id, 
-                text=f"🛑 *\\[RESTRICTION ENFORCED]*\nPayload mass is {file_size_mb:.1f} MB. Telegram grid restricts transmissions to 50 MB.\n_Mission Aborted._",
+                text=f"🛑 *\\[RESTRICTION ENFORCED]*\nPayload mass is {file_size_mb:.1f} MB. Telegram restricts transmissions to 50 MB.\n_Mission Aborted._",
                 parse_mode=ParseMode.MARKDOWN
             )
             os.remove(file_name)
@@ -225,10 +229,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(file_name):
                 os.remove(file_name)
     else:
+        # Clean up error message for cleaner logs
+        clean_error = "Platform Blocked Connection" if "Sign in to confirm" in str(error_msg) else error_msg
         await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=status_message.message_id, 
-            text=f"❌ *\\[TARGET EVASIVE]*\nPlatform defense systems blocked the request.\n\n_Diagnostic Code: {error_msg}_",
+            text=f"❌ *\\[TARGET EVASIVE]*\nPlatform defense systems blocked the request.\n\n_Diagnostic Code: {clean_error}_",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -240,7 +246,7 @@ def main():
     if os.path.exists('cookies.txt'):
         print("✅ [SYSTEM CHECK]: cookies.txt FOUND successfully in the directory.")
     else:
-        print("⚠️ [SYSTEM WARNING]: cookies.txt NOT FOUND! YouTube downloads might be restricted.")
+        print("⚠️ [SYSTEM WARNING]: cookies.txt NOT FOUND! High-res YouTube bypass might be restricted.")
 
     server_thread = threading.Thread(target=run_server)
     server_thread.daemon = True
@@ -251,7 +257,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🛡️ [ZORK DI MAINFRAME ONLINE] Cobalt API Bypass Active...")
+    print("🛡️ [ZORK DI MAINFRAME ONLINE] Anti-Freeze IPv4 System Active...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
