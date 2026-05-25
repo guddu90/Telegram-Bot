@@ -29,16 +29,17 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 # --- CORE DOWNLOADING & METADATA FUNCTIONS ---
 def get_base_ydl_opts():
-    """Base options customized for Render.com Data Center IP Bypass"""
+    """Base options customized for Render.com Data Center IP Bypass & Anti-Freeze"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
         'socket_timeout': 15,  
-        'retries': 2,          
+        'retries': 2,
+        'extractor_retries': 1, # ANTI-FREEZE: Stops yt-dlp from infinite metadata loops
         'nocheckcertificate': True,
-        'geo_bypass': True, # HELPS WITH RENDER'S FOREIGN IPs
-        # RENDER BYPASS: Spoofing as an iOS mobile device is currently the strongest bypass
+        'geo_bypass': True,
+        # RENDER BYPASS: iOS spoofing is currently the strongest
         'extractor_args': {
             'youtube': {
                 'player_client': ['ios', 'android', 'mweb', 'web']
@@ -50,7 +51,6 @@ def get_base_ydl_opts():
         }
     }
     
-    # Smart Cookie Check for Render Logs
     if os.path.exists('cookies.txt'):
         opts['cookiefile'] = 'cookies.txt'
     return opts
@@ -144,7 +144,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN
     )
 
-    success, options, title = await asyncio.to_thread(fetch_video_metadata, url)
+    # ANTI-FREEZE TIMEOUT: Force kill the process if YouTube holds it for more than 30 seconds
+    try:
+        success, options, title = await asyncio.wait_for(
+            asyncio.to_thread(fetch_video_metadata, url), timeout=30.0
+        )
+    except asyncio.TimeoutError:
+        await scan_msg.edit_text(
+            "❌ *\\[RADAR TIMEOUT]*\nConnection to target server timed out. YouTube firewall blocked the scan or connection is dead.\n\n_System Diagnostics: Force Terminated to prevent Bot Freeze. Check your cookies or update yt-dlp._",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
 
     if not success or not options:
         await scan_msg.edit_text(
@@ -214,7 +224,21 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN
     )
 
-    success, error_msg = await asyncio.to_thread(download_media, url, quality, file_name)
+    try:
+        # ANTI-FREEZE TIMEOUT FOR DOWNLOAD (15 Mins max)
+        success, error_msg = await asyncio.wait_for(
+            asyncio.to_thread(download_media, url, quality, file_name), timeout=900.0
+        )
+    except asyncio.TimeoutError:
+        await context.bot.edit_message_text(
+            chat_id=chat_id, 
+            message_id=status_message.message_id, 
+            text="❌ *\\[EXTRACTION TIMEOUT]*\nDownload took too long and was force-terminated to prevent server hang.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        if os.path.exists(file_name):
+            os.remove(file_name)
+        return
 
     if success and os.path.exists(file_name):
         file_size_mb = os.path.getsize(file_name) / (1024 * 1024)
