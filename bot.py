@@ -59,8 +59,8 @@ def download_with_ytdlp(url, file_name):
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
-        # This auto-fetches the best available format. No fake 4K promises.
-        'format': 'bestvideo[ext=mp4]+bestaudio[m4a]/best[ext=mp4]/best',
+        # BUG FIXED: Added ext= before m4a to resolve invalid filter specification
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': file_name,
         'max_filesize': 49.5 * 1024 * 1024, # Stops Render server from hanging on massive files
         'http_headers': {
