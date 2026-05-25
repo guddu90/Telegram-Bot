@@ -27,19 +27,18 @@ def run_server():
 # --- BOT CONFIGURATION ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-# --- CORE DOWNLOADING & METADATA FUNCTIONS ---
-def get_base_ydl_opts(is_metadata=False):
-    """Base options customized for Reliability & Anti-Freeze"""
+# --- CORE DOWNLOADING FUNCTIONS (NO MORE SCANNING) ---
+def get_base_ydl_opts():
+    """Base options customized for Extreme Speed & Reliability"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
-        'socket_timeout': 20, # Fixed standard timeout
+        'socket_timeout': 20, 
         'retries': 2,
         'extractor_retries': 1,
         'nocheckcertificate': True,
         'geo_bypass': True,
-        # Removed concurrent fragments to stop YouTube tarpit
         'extractor_args': {
             'youtube': {
                 'player_client': ['tv', 'ios', 'android', 'web']
@@ -51,46 +50,18 @@ def get_base_ydl_opts(is_metadata=False):
         }
     }
     
-    if is_metadata:
-        opts['extract_flat'] = False 
-        opts['compat_opts'] = ['no-youtube-unavailable-videos']
-    
     if os.path.exists('cookies.txt'):
         opts['cookiefile'] = 'cookies.txt'
     return opts
 
-def fetch_video_metadata(url):
-    ydl_opts = get_base_ydl_opts(is_metadata=True)
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            formats = info.get('formats', [])
-            
-            resolutions = set()
-            for f in formats:
-                height = f.get('height')
-                vcodec = f.get('vcodec')
-                if height and vcodec != 'none':
-                    resolutions.add(height)
-            
-            sorted_res = sorted(list(resolutions), reverse=True)
-            available_options = sorted_res[:4]
-
-            title = info.get('title', 'Classified Asset')
-            return True, available_options, title
-    except Exception as e:
-        return False, str(e), None
-
 def download_media(url, quality, file_name):
-    ydl_opts = get_base_ydl_opts(is_metadata=False)
+    ydl_opts = get_base_ydl_opts()
     ydl_opts['outtmpl'] = file_name
 
     if quality == 'mp3':
         ydl_opts['format'] = 'bestaudio/best'
     else:
-        # STRICT FALLBACK: Forces pre-merged mp4 (b means best with video+audio). 
-        # Prevents FFmpeg merge hangs on Render.com
+        # Auto-Adjusting format: If requested quality is missing, it grabs the next best available automatically
         ydl_opts['format'] = f'b[height<={quality}][ext=mp4]/b[ext=mp4]/best'
 
     try:
@@ -108,13 +79,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔐 `\\[SECURE HANDSHAKE: SUCCESS]`\n\n"
         "Greetings, Operator. I am the *Tactical Media Extraction Node*.\n"
         "Engineered for high-tier payload retrieval across global network grids.\n\n"
-        "📍 *Directive:* Transmit target coordinates (URL) to initiate surveillance."
+        "📍 *Directive:* Transmit target coordinates (URL) to initiate immediate extraction."
     )
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
 
+    # ZORK DI Identity Logic
     identity_keywords = ["who made you", "creator", "naam kya hai", "who are you", "zork di", "banaya kisne", "boss", "command"]
     if any(keyword in text for keyword in identity_keywords):
         identity_text = (
@@ -130,61 +102,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not url_pattern:
         await update.message.reply_text(
-            "⚠️ *\\[CRITICAL ALERT]*\nInvalid coordinates detected. Radar scan failed to locate a verified protocol. Please recalibrate.", 
+            "⚠️ *\\[CRITICAL ALERT]*\nInvalid coordinates detected. Radar scan failed. Please recalibrate.", 
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
     url = url_pattern.group(1)
     
+    # Twitter Fast-Route Fix
     if "x.com" in url:
         url = url.replace("x.com", "twitter.com")
         
     context.user_data['video_url'] = url
 
-    scan_msg = await update.message.reply_text(
-        "📡 *\\[RADAR ACTIVE]*\nScanning target coordinates for available payload densities. Please wait...", 
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-    try:
-        success, options, title = await asyncio.wait_for(
-            asyncio.to_thread(fetch_video_metadata, url), timeout=30.0
-        )
-    except asyncio.TimeoutError:
-         await scan_msg.edit_text(
-            "❌ *\\[RADAR TIMEOUT]*\nConnection to target server timed out. System force-terminated to prevent freezing.",
-            parse_mode=ParseMode.MARKDOWN
-        )
-         return
-
-    if not success or not options:
-        await scan_msg.edit_text(
-            f"❌ *\\[TARGET EVASIVE]*\nUnable to penetrate server firewalls. Asset might be private, geo-restricted, or blocked by platform.\n\n_System Diagnostics: {options}_",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-
-    keyboard = []
-    for res in options:
-        if res >= 2160:
-            label = f"[ 🌌 {res}p | 4K ULTRA OMEGA ]"
-        elif res >= 1440:
-            label = f"[ ☄️ {res}p | 2K QUAD HD ]"
-        elif res >= 1080:
-            label = f"[ 🛰️ {res}p | MAXIMUM OVERRIDE ]"
-        elif res >= 720:
-            label = f"[ ⚡ {res}p | STANDARD PROTOCOL ]"
-        else:
-            label = f"[ 🔋 {res}p | OPTIMIZED BANDWIDTH ]"
-        keyboard.append([InlineKeyboardButton(label, callback_data=str(res))])
-
-    keyboard.append([InlineKeyboardButton("[ 🎵 High-Res MP3 Audio ]", callback_data="mp3")])
+    # INSTANT TACTICAL MENU (No Scanning Required)
+    keyboard = [
+        [InlineKeyboardButton("[ 🌌 2160p | 4K ULTRA OMEGA ]", callback_data="2160")],
+        [InlineKeyboardButton("[ ☄️ 1440p | 2K QUAD HD ]", callback_data="1440")],
+        [InlineKeyboardButton("[ 🛰️ 1080p | MAXIMUM OVERRIDE ]", callback_data="1080")],
+        [InlineKeyboardButton("[ ⚡ 720p | STANDARD PROTOCOL ]", callback_data="720")],
+        [InlineKeyboardButton("[ 🔋 480p | OPTIMIZED BANDWIDTH ]", callback_data="480")],
+        [InlineKeyboardButton("[ 🎵 High-Res MP3 Audio ]", callback_data="mp3")]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    safe_title = re.sub(r'[_*\[\]`]', '', title)
 
-    await scan_msg.edit_text(
-        f"🎯 *\\[TARGET LOCKED]*\n*Asset:* `{safe_title}`\n\nSelect payload density for immediate extraction:", 
+    await update.message.reply_text(
+        "🎯 *\\[TARGET LOCKED - INSTANT MODE]*\n*Asset:* `[ ZORK DI CLASSIFIED ASSET ]`\n\nSelect payload density for immediate extraction:", 
         reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN
     )
@@ -199,13 +142,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not url:
         await query.edit_message_text(
-            "❌ *\\[SYSTEM FAULT]*\nTarget URL purged from temporary memory to prevent tracing. Re-initialize the sequence.",
+            "❌ *\\[SYSTEM FAULT]*\nTarget URL purged from temporary memory. Re-initialize the sequence.",
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
     status_message = await query.edit_message_text(
-        f"\\[⚙️ COMMAND RECOGNIZED]\nRunning tactical analysis on target coordinates...\n\\[🔍 BYPASSING] Neutralizing host security layers...",
+        f"\\[⚙️ COMMAND RECOGNIZED]\nInitiating blind extraction protocol...\n\\[🔍 BYPASSING] Neutralizing host security layers...",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -214,7 +157,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     unique_id = str(uuid.uuid4())[:8]
     file_name = f'payload_{chat_id}_{unique_id}.{ext}'
 
-    extraction_text = "\\[📥 ACQUIRING PAYLOAD] Extracting audio waves..." if is_audio else f"\\[📥 ACQUIRING PAYLOAD] Extracting neural net data at {quality}p..."
+    extraction_text = "\\[📥 ACQUIRING PAYLOAD] Extracting audio waves..." if is_audio else f"\\[📥 ACQUIRING PAYLOAD] Extracting neural net data (Targeting {quality}p)..."
     await context.bot.edit_message_text(
         chat_id=chat_id, 
         message_id=status_message.message_id, 
@@ -223,7 +166,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        # Wrap download in wait_for to prevent infinite yt-dlp freezing
+        # Downloading process with timeout protection
         success, error_msg = await asyncio.wait_for(
             asyncio.to_thread(download_media, url, quality, file_name), timeout=300.0
         )
@@ -231,7 +174,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
          await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=status_message.message_id, 
-            text="❌ *\\[DOWNLOAD TIMEOUT]*\nHost server is tarpitting the connection. Operation force-aborted to keep bot alive.",
+            text="❌ *\\[DOWNLOAD TIMEOUT]*\nHost server is tarpitting the connection. Operation force-aborted.",
             parse_mode=ParseMode.MARKDOWN
         )
          if os.path.exists(file_name):
@@ -241,7 +184,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if success and os.path.exists(file_name):
         file_size_mb = os.path.getsize(file_name) / (1024 * 1024)
 
-        # Corrupt file protection
         if file_size_mb < 0.1:
             await context.bot.edit_message_text(
                 chat_id=chat_id, 
@@ -273,13 +215,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with open(file_name, 'rb') as media_file:
                 caption_text = (
                     f"✅ *TACTICAL EXTRACTION COMPLETE*\n\n"
-                    f"▫️ **Asset Type:** {'MP3 Audio' if is_audio else f'{quality}p Video'}\n"
+                    f"▫️ **Asset Type:** {'MP3 Audio' if is_audio else f'Video Payload'}\n"
                     f"▫️ **Payload Mass:** {file_size_mb:.1f} MB\n"
                     f"▫️ **Security Status:** CLEARED\n\n"
                     f"🛡️ **Commanded by:** ZORK DI"
                 )
 
-                # HARD TIMEOUT ON UPLOAD to prevent Twitter/Telegram hang
                 if is_audio:
                     await asyncio.wait_for(
                         context.bot.send_audio(
@@ -352,7 +293,7 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_click))
 
-    print("🛡️ [ZORK DI MAINFRAME ONLINE] Scanning grid for communications...")
+    print("🛡️ [ZORK DI MAINFRAME ONLINE] Instant Blind-Radar System Active...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
