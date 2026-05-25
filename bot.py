@@ -29,24 +29,24 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 # --- CORE DOWNLOADING & METADATA FUNCTIONS ---
 def get_base_ydl_opts():
-    """Base options customized for Render.com Data Center IP Bypass & Anti-Freeze"""
+    """Universal Bypass Options for X, Instagram, and YouTube on Render Data Centers"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
-        'socket_timeout': 15,  
-        'retries': 2,
-        'extractor_retries': 1, # ANTI-FREEZE: Stops yt-dlp from infinite metadata loops
+        'socket_timeout': 30, # Balanced for large files
+        'retries': 3,
         'nocheckcertificate': True,
         'geo_bypass': True,
-        # RENDER BYPASS: iOS spoofing is currently the strongest
+        'source_address': '0.0.0.0', # FORCE IPv4 to bypass Render's IPv6 blocks
+        # THE ULTIMATE BYPASS: Smart TV & Console Spoofing
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'android', 'mweb', 'web']
+                'player_client': ['tv', 'mweb', 'ios', 'web']
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
         }
     }
@@ -56,9 +56,6 @@ def get_base_ydl_opts():
     return opts
 
 def fetch_video_metadata(url):
-    """
-    Smart Background Process: Extracts video metadata and available dynamic resolutions.
-    """
     ydl_opts = get_base_ydl_opts()
     
     try:
@@ -82,15 +79,13 @@ def fetch_video_metadata(url):
         return False, str(e), None
 
 def download_media(url, quality, file_name):
-    """
-    Actual extraction protocol running in background thread.
-    """
     ydl_opts = get_base_ydl_opts()
     ydl_opts['outtmpl'] = file_name
 
     if quality == 'mp3':
         ydl_opts['format'] = 'bestaudio/best'
     else:
+        # Prioritizes requested quality but will fallback to any best available mp4 if merged formats are scarce
         ydl_opts['format'] = f'best[height<={quality}][ext=mp4]/best[ext=mp4]/best'
 
     try:
@@ -115,7 +110,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
 
-    # --- ZORK DI IDENTITY LOGIC ---
     identity_keywords = ["who made you", "creator", "naam kya hai", "who are you", "zork di", "banaya kisne", "boss", "command"]
     if any(keyword in text for keyword in identity_keywords):
         identity_text = (
@@ -137,6 +131,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     url = url_pattern.group(1)
+    
+    # X.COM TO TWITTER URL BYPASS INTERCEPTOR
+    if "x.com/" in url:
+        url = url.replace("https://x.com/", "https://twitter.com/")
+        
     context.user_data['video_url'] = url
 
     scan_msg = await update.message.reply_text(
@@ -144,21 +143,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN
     )
 
-    # ANTI-FREEZE TIMEOUT: Force kill the process if YouTube holds it for more than 30 seconds
-    try:
-        success, options, title = await asyncio.wait_for(
-            asyncio.to_thread(fetch_video_metadata, url), timeout=30.0
-        )
-    except asyncio.TimeoutError:
-        await scan_msg.edit_text(
-            "❌ *\\[RADAR TIMEOUT]*\nConnection to target server timed out. YouTube firewall blocked the scan or connection is dead.\n\n_System Diagnostics: Force Terminated to prevent Bot Freeze. Check your cookies or update yt-dlp._",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
+    success, options, title = await asyncio.to_thread(fetch_video_metadata, url)
 
     if not success or not options:
         await scan_msg.edit_text(
-            f"❌ *\\[TARGET EVASIVE]*\nUnable to penetrate server firewalls. Asset might be private, geo-restricted, or blocked by platform.\n\n_System Diagnostics: {options}_",
+            f"❌ *\\[TARGET EVASIVE]*\nUnable to penetrate server firewalls. Asset might be private, geo-restricted, or blocked by platform.\n\n_System Diagnostics: {options}_\n\n⚠️ Ensure your universal `cookies.txt` is updated.",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -224,21 +213,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN
     )
 
-    try:
-        # ANTI-FREEZE TIMEOUT FOR DOWNLOAD (15 Mins max)
-        success, error_msg = await asyncio.wait_for(
-            asyncio.to_thread(download_media, url, quality, file_name), timeout=900.0
-        )
-    except asyncio.TimeoutError:
-        await context.bot.edit_message_text(
-            chat_id=chat_id, 
-            message_id=status_message.message_id, 
-            text="❌ *\\[EXTRACTION TIMEOUT]*\nDownload took too long and was force-terminated to prevent server hang.",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        if os.path.exists(file_name):
-            os.remove(file_name)
-        return
+    success, error_msg = await asyncio.to_thread(download_media, url, quality, file_name)
 
     if success and os.path.exists(file_name):
         file_size_mb = os.path.getsize(file_name) / (1024 * 1024)
@@ -313,10 +288,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not BOT_TOKEN:
-        print("❌ [CRITICAL SYSTEM FAILURE]: BOT_TOKEN is missing! Provide coordinates via .env file or Render Environment Variables.")
+        print("❌ [CRITICAL SYSTEM FAILURE]: BOT_TOKEN is missing!")
         return
 
-    # Diagnostic Check for Render logs
     if os.path.exists('cookies.txt'):
         print("✅ [SYSTEM CHECK]: cookies.txt FOUND successfully in the directory.")
     else:
