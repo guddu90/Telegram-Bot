@@ -29,25 +29,27 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 # --- CORE DOWNLOADING & METADATA FUNCTIONS ---
 def get_base_ydl_opts():
-    """Universal Bypass Options for X, Instagram, and YouTube on Render Data Centers"""
+    """Base options customized for MAXIMUM SPEED, Anti-Hang and Render Bypass"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
-        'socket_timeout': 30, # Balanced for large files
+        'socket_timeout': 15,  
         'retries': 3,
+        'extractor_retries': 2,
         'nocheckcertificate': True,
         'geo_bypass': True,
-        'source_address': '0.0.0.0', # FORCE IPv4 to bypass Render's IPv6 blocks
-        # THE ULTIMATE BYPASS: Smart TV & Console Spoofing
+        'source_address': '0.0.0.0', 
+        'concurrent_fragment_downloads': 10, # ROCKET SPEED DOWNLOAD FIX
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv', 'mweb', 'ios', 'web']
+                'player_client': ['tv', 'ios', 'android', 'web'] 
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
+            'Sec-Fetch-Mode': 'navigate'
         }
     }
     
@@ -70,11 +72,14 @@ def fetch_video_metadata(url):
                 if height and vcodec != 'none':
                     resolutions.add(height)
             
-            sorted_res = sorted(list(resolutions), reverse=True)
-            available_options = sorted_res[:4]
+            if resolutions:
+                sorted_res = sorted(list(resolutions), reverse=True)[:4]
+            else:
+                # Default safety fallback if formats are hidden
+                sorted_res = [1080, 720, 480]
 
             title = info.get('title', 'Classified Asset')
-            return True, available_options, title
+            return True, sorted_res, title
     except Exception as e:
         return False, str(e), None
 
@@ -85,7 +90,6 @@ def download_media(url, quality, file_name):
     if quality == 'mp3':
         ydl_opts['format'] = 'bestaudio/best'
     else:
-        # Prioritizes requested quality but will fallback to any best available mp4 if merged formats are scarce
         ydl_opts['format'] = f'best[height<={quality}][ext=mp4]/best[ext=mp4]/best'
 
     try:
@@ -132,9 +136,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = url_pattern.group(1)
     
-    # X.COM TO TWITTER URL BYPASS INTERCEPTOR
-    if "x.com/" in url:
-        url = url.replace("https://x.com/", "https://twitter.com/")
+    # X.COM FIX: Auto conversion
+    if "x.com" in url:
+        url = url.replace("x.com", "twitter.com")
         
     context.user_data['video_url'] = url
 
@@ -143,17 +147,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN
     )
 
-    success, options, title = await asyncio.to_thread(fetch_video_metadata, url)
+    # ANTI-HANG ZERO-WAIT FALLBACK SYSTEM
+    # Agar 8 second ke andar scan complete nahi hua, toh seedha bypass maar ke menu dega
+    try:
+        success, options, title = await asyncio.wait_for(
+            asyncio.to_thread(fetch_video_metadata, url), timeout=8.0
+        )
+    except asyncio.TimeoutError:
+        success = True
+        options = [1080, 720, 480]  # Instant fallback options
+        title = "Encrypted Asset (Bypassed Scan)"
 
     if not success or not options:
         await scan_msg.edit_text(
-            f"❌ *\\[TARGET EVASIVE]*\nUnable to penetrate server firewalls. Asset might be private, geo-restricted, or blocked by platform.\n\n_System Diagnostics: {options}_\n\n⚠️ Ensure your universal `cookies.txt` is updated.",
+            f"❌ *\\[TARGET EVASIVE]*\nUnable to penetrate server firewalls. Asset might be private, geo-restricted, or blocked by platform.",
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
     keyboard = []
-    
     for res in options:
         if res >= 2160:
             label = f"[ 🌌 {res}p | 4K ULTRA OMEGA ]"
@@ -165,13 +177,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             label = f"[ ⚡ {res}p | STANDARD PROTOCOL ]"
         else:
             label = f"[ 🔋 {res}p | OPTIMIZED BANDWIDTH ]"
-        
         keyboard.append([InlineKeyboardButton(label, callback_data=str(res))])
 
     keyboard.append([InlineKeyboardButton("[ 🎵 High-Res MP3 Audio ]", callback_data="mp3")])
-
     reply_markup = InlineKeyboardMarkup(keyboard)
-
     safe_title = re.sub(r'[_*\[\]`]', '', title)
 
     await scan_msg.edit_text(
@@ -209,7 +218,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.edit_message_text(
         chat_id=chat_id, 
         message_id=status_message.message_id, 
-        text=f"{extraction_text}\n⚠️ _Background extraction active. Do not terminate connection._",
+        text=f"{extraction_text}\n⚡ _ROCKET MODE ENGAGED. HIGH-SPEED DOWNLOAD ACTIVE._",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -251,8 +260,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         audio=media_file,
                         caption=caption_text,
                         parse_mode=ParseMode.MARKDOWN,
-                        read_timeout=120, 
-                        write_timeout=120 
+                        read_timeout=300, 
+                        write_timeout=300 
                     )
                 else:
                     await context.bot.send_video(
@@ -261,8 +270,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption=caption_text,
                         parse_mode=ParseMode.MARKDOWN,
                         supports_streaming=True,
-                        read_timeout=120, 
-                        write_timeout=120 
+                        read_timeout=300, 
+                        write_timeout=300 
                     )
             
             await context.bot.delete_message(chat_id=chat_id, message_id=status_message.message_id)
@@ -288,7 +297,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not BOT_TOKEN:
-        print("❌ [CRITICAL SYSTEM FAILURE]: BOT_TOKEN is missing!")
+        print("❌ [CRITICAL SYSTEM FAILURE]: BOT_TOKEN is missing! Provide coordinates via .env file or Render Environment Variables.")
         return
 
     if os.path.exists('cookies.txt'):
@@ -300,7 +309,8 @@ def main():
     server_thread.daemon = True
     server_thread.start()
 
-    application = Application.builder().token(BOT_TOKEN).pool_timeout(60).connect_timeout(60).read_timeout(60).write_timeout(60).build()
+    # GLOBAL TIMEOUT 300s TO STOP RANDOM HANGS
+    application = Application.builder().token(BOT_TOKEN).pool_timeout(60).connect_timeout(60).read_timeout(300).write_timeout(300).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
