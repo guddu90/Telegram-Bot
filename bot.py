@@ -3,9 +3,10 @@ import threading
 import asyncio
 import uuid
 import re
+import aiohttp
 from flask import Flask
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 import yt_dlp
 from dotenv import load_dotenv
@@ -27,45 +28,53 @@ def run_server():
 # --- BOT CONFIGURATION ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-# --- CORE DOWNLOADING FUNCTIONS (NO MORE SCANNING) ---
-def get_base_ydl_opts():
-    """Base options customized for Extreme Speed & Reliability"""
+# --- CORE DOWNLOADING FUNCTIONS ---
+
+async def fetch_from_cobalt(url):
+    """Bypasses limits using Cobalt API to fetch the absolute best available quality instantly"""
+    api_url = "https://api.cobalt.tools/api/json"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "url": url,
+        "vQuality": "max", # Automatically grabs the highest available resolution (4K, 1080p, whatever exists)
+        "filenamePattern": "classic"
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(api_url, json=payload, headers=headers, timeout=15) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("status") in ["redirect", "stream"]:
+                        return data.get("url")
+    except Exception as e:
+        print(f"[COBALT API ERROR]: {e}")
+    return None
+
+def download_with_ytdlp(url, file_name):
+    """Fallback Engine: Uses optimized yt-dlp if API fails"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
-        'socket_timeout': 20, 
-        'retries': 2,
-        'extractor_retries': 1,
-        'nocheckcertificate': True,
-        'geo_bypass': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv', 'ios', 'android', 'web']
-            }
-        },
+        # This auto-fetches the best available format. No fake 4K promises.
+        'format': 'bestvideo[ext=mp4]+bestaudio[m4a]/best[ext=mp4]/best',
+        'outtmpl': file_name,
+        'max_filesize': 49.5 * 1024 * 1024, # Stops Render server from hanging on massive files
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        'sleep_interval': 1,
+        'max_sleep_interval': 3
     }
     
     if os.path.exists('cookies.txt'):
         opts['cookiefile'] = 'cookies.txt'
-    return opts
-
-def download_media(url, quality, file_name):
-    ydl_opts = get_base_ydl_opts()
-    ydl_opts['outtmpl'] = file_name
-
-    if quality == 'mp3':
-        ydl_opts['format'] = 'bestaudio/best'
-    else:
-        # Auto-Adjusting format: If requested quality is missing, it grabs the next best available automatically
-        ydl_opts['format'] = f'b[height<={quality}][ext=mp4]/b[ext=mp4]/best'
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
             return True, None
     except Exception as e:
@@ -112,93 +121,76 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Twitter Fast-Route Fix
     if "x.com" in url:
         url = url.replace("x.com", "twitter.com")
-        
-    context.user_data['video_url'] = url
 
-    # INSTANT TACTICAL MENU (No Scanning Required)
-    keyboard = [
-        [InlineKeyboardButton("[ 🌌 2160p | 4K ULTRA OMEGA ]", callback_data="2160")],
-        [InlineKeyboardButton("[ ☄️ 1440p | 2K QUAD HD ]", callback_data="1440")],
-        [InlineKeyboardButton("[ 🛰️ 1080p | MAXIMUM OVERRIDE ]", callback_data="1080")],
-        [InlineKeyboardButton("[ ⚡ 720p | STANDARD PROTOCOL ]", callback_data="720")],
-        [InlineKeyboardButton("[ 🔋 480p | OPTIMIZED BANDWIDTH ]", callback_data="480")],
-        [InlineKeyboardButton("[ 🎵 High-Res MP3 Audio ]", callback_data="mp3")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    chat_id = update.message.chat_id
 
-    await update.message.reply_text(
-        "🎯 *\\[TARGET LOCKED - INSTANT MODE]*\n*Asset:* `[ ZORK DI CLASSIFIED ASSET ]`\n\nSelect payload density for immediate extraction:", 
-        reply_markup=reply_markup,
+    # Instant Action - No Buttons
+    status_message = await update.message.reply_text(
+        "🎯 *\\[TARGET LOCKED - INSTANT MODE]*\n"
+        "\\[⚙️ COMMAND RECOGNIZED] Auto-detecting maximum available quality...\n"
+        "\\[🔍 BYPASSING] Neutralizing host security layers...",
         parse_mode=ParseMode.MARKDOWN
     )
 
-async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer() 
-
-    quality = query.data
-    url = context.user_data.get('video_url')
-    chat_id = query.message.chat_id
-
-    if not url:
-        await query.edit_message_text(
-            "❌ *\\[SYSTEM FAULT]*\nTarget URL purged from temporary memory. Re-initialize the sequence.",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-
-    status_message = await query.edit_message_text(
-        f"\\[⚙️ COMMAND RECOGNIZED]\nInitiating blind extraction protocol...\n\\[🔍 BYPASSING] Neutralizing host security layers...",
-        parse_mode=ParseMode.MARKDOWN
+    caption_text = (
+        f"✅ *TACTICAL EXTRACTION COMPLETE*\n\n"
+        f"▫️ **Asset Mode:** Max Available Resolution\n"
+        f"▫️ **Security Status:** CLEARED\n\n"
+        f"🛡️ **Commanded by:** ZORK DI"
     )
 
-    is_audio = (quality == 'mp3')
-    ext = 'mp3' if is_audio else 'mp4'
-    unique_id = str(uuid.uuid4())[:8]
-    file_name = f'payload_{chat_id}_{unique_id}.{ext}'
+    # 1st Attempt: Ultra-Fast API Bypass
+    direct_url = await fetch_from_cobalt(url)
 
-    extraction_text = "\\[📥 ACQUIRING PAYLOAD] Extracting audio waves..." if is_audio else f"\\[📥 ACQUIRING PAYLOAD] Extracting neural net data (Targeting {quality}p)..."
+    if direct_url:
+        try:
+            await context.bot.send_video(
+                chat_id=chat_id,
+                video=direct_url,
+                caption=caption_text,
+                parse_mode=ParseMode.MARKDOWN,
+                read_timeout=120,
+                write_timeout=120
+            )
+            await status_message.delete()
+            return
+        except Exception as e:
+            print(f"[DIRECT UPLOAD FAILED]: {e}. Falling back to deep extraction.")
+
+    # 2nd Attempt: yt-dlp Deep Extraction Fallback
     await context.bot.edit_message_text(
-        chat_id=chat_id, 
-        message_id=status_message.message_id, 
-        text=f"{extraction_text}\n⚡ _STABLE EXTRACTION ACTIVE. BYPASSING FIREWALLS._",
+        chat_id=chat_id,
+        message_id=status_message.message_id,
+        text="⚠️ *\\[API EVADED]*\nTarget platform is resisting. Initiating deep extraction via backup engine...\n_Please hold, compiling maximum available format..._",
         parse_mode=ParseMode.MARKDOWN
     )
+
+    unique_id = str(uuid.uuid4())[:8]
+    file_name = f'payload_{chat_id}_{unique_id}.mp4'
 
     try:
-        # Downloading process with timeout protection
         success, error_msg = await asyncio.wait_for(
-            asyncio.to_thread(download_media, url, quality, file_name), timeout=300.0
+            asyncio.to_thread(download_with_ytdlp, url, file_name), timeout=300.0
         )
     except asyncio.TimeoutError:
-         await context.bot.edit_message_text(
+        await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=status_message.message_id, 
             text="❌ *\\[DOWNLOAD TIMEOUT]*\nHost server is tarpitting the connection. Operation force-aborted.",
             parse_mode=ParseMode.MARKDOWN
         )
-         if os.path.exists(file_name):
+        if os.path.exists(file_name):
             os.remove(file_name)
-         return
+        return
 
     if success and os.path.exists(file_name):
         file_size_mb = os.path.getsize(file_name) / (1024 * 1024)
-
-        if file_size_mb < 0.1:
-            await context.bot.edit_message_text(
-                chat_id=chat_id, 
-                message_id=status_message.message_id, 
-                text=f"❌ *\\[CORRUPT PAYLOAD]*\nAsset successfully extracted but payload mass is 0 MB. Target likely blocked the video stream.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            os.remove(file_name)
-            return
 
         if file_size_mb > 49.5:
             await context.bot.edit_message_text(
                 chat_id=chat_id, 
                 message_id=status_message.message_id, 
-                text=f"🛑 *\\[RESTRICTION ENFORCED]*\nPayload mass is {file_size_mb:.1f} MB. Telegram grid restricts transmissions to 50 MB.\n_Mission Aborted. Wiping localized data._",
+                text=f"🛑 *\\[RESTRICTION ENFORCED]*\nPayload mass is {file_size_mb:.1f} MB. Telegram grid restricts transmissions to 50 MB.\n_Mission Aborted._",
                 parse_mode=ParseMode.MARKDOWN
             )
             os.remove(file_name)
@@ -207,69 +199,36 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=status_message.message_id, 
-            text="\\[📡 ESTABLISHING UPLINK]\nEncryption algorithm: AES-256 applied. Uploading payload to secure Telegram grid...",
+            text="\\[📡 ESTABLISHING UPLINK]\nAES-256 applied. Uploading payload to secure Telegram grid...",
             parse_mode=ParseMode.MARKDOWN
         )
 
         try:
             with open(file_name, 'rb') as media_file:
-                caption_text = (
-                    f"✅ *TACTICAL EXTRACTION COMPLETE*\n\n"
-                    f"▫️ **Asset Type:** {'MP3 Audio' if is_audio else f'Video Payload'}\n"
-                    f"▫️ **Payload Mass:** {file_size_mb:.1f} MB\n"
-                    f"▫️ **Security Status:** CLEARED\n\n"
-                    f"🛡️ **Commanded by:** ZORK DI"
+                await context.bot.send_video(
+                    chat_id=chat_id,
+                    video=media_file,
+                    caption=caption_text + f"\n▫️ **Payload Mass:** {file_size_mb:.1f} MB",
+                    parse_mode=ParseMode.MARKDOWN,
+                    read_timeout=120, 
+                    write_timeout=120 
                 )
-
-                if is_audio:
-                    await asyncio.wait_for(
-                        context.bot.send_audio(
-                            chat_id=chat_id,
-                            audio=media_file,
-                            caption=caption_text,
-                            parse_mode=ParseMode.MARKDOWN,
-                            read_timeout=120, 
-                            write_timeout=120 
-                        ), timeout=240.0
-                    )
-                else:
-                    await asyncio.wait_for(
-                        context.bot.send_video(
-                            chat_id=chat_id,
-                            video=media_file,
-                            caption=caption_text,
-                            parse_mode=ParseMode.MARKDOWN,
-                            supports_streaming=True,
-                            read_timeout=120, 
-                            write_timeout=120 
-                        ), timeout=240.0
-                    )
-            
-            await context.bot.delete_message(chat_id=chat_id, message_id=status_message.message_id)
-            
-        except asyncio.TimeoutError:
-            await context.bot.edit_message_text(
-                chat_id=chat_id, 
-                message_id=status_message.message_id, 
-                text=f"❌ *\\[UPLINK HANG]*\nTelegram server stopped responding during upload. Connection force-closed.",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            await status_message.delete()
         except Exception as e:
             await context.bot.edit_message_text(
                 chat_id=chat_id, 
                 message_id=status_message.message_id, 
-                text=f"❌ *\\[UPLINK FAILED]*\nSignal interference during payload delivery. Transmission dropped.\n\nError: {e}",
+                text=f"❌ *\\[UPLINK FAILED]*\nSignal interference during payload delivery.\n\nError: {e}",
                 parse_mode=ParseMode.MARKDOWN
             )
         finally:
             if os.path.exists(file_name):
                 os.remove(file_name)
-
     else:
         await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=status_message.message_id, 
-            text=f"❌ *\\[TARGET EVASIVE]*\nPlatform defense systems blocked the request, or the intel is classified.\n\n_Diagnostic Code: {error_msg}_",
+            text=f"❌ *\\[TARGET EVASIVE]*\nPlatform defense systems blocked the request.\n\n_Diagnostic Code: {error_msg}_",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -281,7 +240,7 @@ def main():
     if os.path.exists('cookies.txt'):
         print("✅ [SYSTEM CHECK]: cookies.txt FOUND successfully in the directory.")
     else:
-        print("⚠️ [SYSTEM WARNING]: cookies.txt NOT FOUND!")
+        print("⚠️ [SYSTEM WARNING]: cookies.txt NOT FOUND! YouTube downloads might be restricted.")
 
     server_thread = threading.Thread(target=run_server)
     server_thread.daemon = True
@@ -291,9 +250,8 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(button_click))
 
-    print("🛡️ [ZORK DI MAINFRAME ONLINE] Instant Blind-Radar System Active...")
+    print("🛡️ [ZORK DI MAINFRAME ONLINE] Cobalt API Bypass Active...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
