@@ -1,24 +1,43 @@
 import os
 import re
+import threading
 import telebot
 import yt_dlp
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
-import threading
+from flask import Flask
 
 # .env file se variables load kar rahe hain
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
+PORT = int(os.getenv('PORT', 8080)) # Render ke liye port fetch karna, default 8080
 
 if not TOKEN:
     print("❌ BOT_TOKEN nahi mila! Please .env file check karo.")
     exit()
 
+# ======= FLASK SERVER SETUP (Render Health Check ke liye) =======
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running perfectly!"
+
+def run_flask():
+    # Flask ko 0.0.0.0 par chalana zaroori hai taaki external connections (Render) check kar sakein
+    app.run(host="0.0.0.0", port=PORT)
+
+# Flask server ko ek background thread me start kar rahe hain
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
+print(f"✅ Web server port {PORT} par start ho gaya hai (Render health check pass karne ke liye).")
+# ================================================================
+
 # Bot initialize kar rahe hain
 bot = telebot.TeleBot(TOKEN)
-print("✅ Naya bot successfully start ho gaya hai (yt-dlp + buttons + auto-delete)...")
+print("✅ Telegram Bot successfully start ho gaya hai...")
 
-# User requests temporarily store karne ke liye dictionary taaki callback data limit cross na ho
+# User requests temporarily store karne ke liye dictionary
 user_requests = {}
 
 @bot.message_handler(commands=['start'])
@@ -40,9 +59,9 @@ def handle_message(message):
         original_url = match.group(1)
         wait_msg = bot.reply_to(message, "⏳ Fetching available qualities... please wait.")
 
-        # yt-dlp options (sirf info nikalne ke liye, download nahi)
+        # yt-dlp options (sirf info nikalne ke liye)
         ydl_opts = {
-            'cookiefile': 'cookies.txt', # Tumhari file jo login issues rokegi
+            'cookiefile': 'cookies.txt', # Login bypass ke liye
             'quiet': True,
             'no_warnings': True,
         }
@@ -54,13 +73,12 @@ def handle_message(message):
                 
                 available_qualities = {}
                 
-                # Formats filter karna jo mp4 hain aur jinme height (resolution) hai
+                # Formats filter karna jo mp4 hain aur jinme height hai
                 for f in formats:
                     height = f.get('height')
                     ext = f.get('ext')
                     format_id = f.get('format_id')
                     
-                    # Duplicate heights hata kar sirf valid mp4 store kar rahe hain
                     if height and ext == 'mp4':
                         available_qualities[f"{height}p"] = format_id
 
@@ -68,7 +86,7 @@ def handle_message(message):
                     bot.edit_message_text("❌ Is video me alag-alag qualities nahi mili ya format support nahi kar raha.", chat_id, wait_msg.message_id)
                     return
 
-                # Callback me poora URL bhejna possible nahi hota (64 byte limit), isliye session me save kar rahe hain
+                # Session me save kar rahe hain
                 user_requests[chat_id] = {
                     'url': original_url,
                     'qualities': available_qualities,
@@ -78,7 +96,6 @@ def handle_message(message):
                 # Inline Buttons banana
                 markup = InlineKeyboardMarkup()
                 for quality, f_id in available_qualities.items():
-                    # Callback data me quality bhejenge
                     button = InlineKeyboardButton(text=quality, callback_data=f"dl_{quality}")
                     markup.add(button)
 
@@ -91,7 +108,7 @@ def handle_message(message):
     elif not text.startswith('/'):
         bot.reply_to(message, "❌ Please sirf valid Twitter (X) ka link hi bhejo.")
 
-# Button click (callback) handle karna
+# Button click handle karna
 @bot.callback_query_handler(func=lambda call: call.data.startswith("dl_"))
 def handle_download(call):
     chat_id = call.message.chat.id
@@ -113,56 +130,49 @@ def handle_download(call):
     bot.answer_callback_query(call.id)
     bot.edit_message_text(f"⏳ Downloading video in {quality_selected}...\nPlease wait, high quality me thoda time lag sakta hai.", chat_id, msg_id)
     
-    # Download process ko background thread me daal rahe hain taaki bot baki users ke liye block na ho
+    # Download background thread me daalna
     threading.Thread(target=download_and_send_video, args=(chat_id, original_url, format_id, msg_id)).start()
 
-# Asynchronous download aur send function
 def download_and_send_video(chat_id, url, format_id, msg_id):
-    # Ek unique temporary filename bana rahe hain
     temp_filename = f"temp_video_{chat_id}_{msg_id}.mp4"
     
     ydl_opts = {
         'cookiefile': 'cookies.txt',
-        'format': f"{format_id}+bestaudio/best", # Video ke sath best audio merge karega
+        'format': f"{format_id}+bestaudio/best",
         'outtmpl': temp_filename,
         'quiet': True,
         'no_warnings': True,
     }
 
     try:
-        # Video local drive me download ho rahi hai
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
             
-        # Download done, ab Telegram par send karna hai
         bot.edit_message_text("📤 Uploading to Telegram... Lagbhag ho gaya!", chat_id, msg_id)
         
         with open(temp_filename, 'rb') as video_file:
             bot.send_video(chat_id, video_file, caption=f"✅ Downloaded successfully!")
             
-        # Success ke baad purana processing message delete kar do
         bot.delete_message(chat_id, msg_id)
         
     except Exception as e:
         print(f"❌ Download Error: {e}")
         try:
-            bot.edit_message_text("❌ Download ya upload me error aa gayi. Shayad server timeout ya FFmpeg missing hai.", chat_id, msg_id)
+            bot.edit_message_text("❌ Download ya upload me error aa gayi.", chat_id, msg_id)
         except:
             pass
     finally:
-        # ✅ STORAGE BACHANE KA MAIN LOGIC
-        # Jaise hi video send ho jaye ya error aaye, local file ko delete kar do
+        # Storage bachane ke liye local file delete karna
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
-            print(f"🗑️ System drive ko full hone se bacha liya. File delete kar di: {temp_filename}")
+            print(f"🗑️ File delete kar di: {temp_filename}")
         
-        # Memory se user session clear kar do
         if chat_id in user_requests:
             del user_requests[chat_id]
 
-# Bot ko continuously chalane ke liye
 if __name__ == "__main__":
     try:
+        # Bot ko run karna
         bot.infinity_polling()
     except Exception as e:
         print(f"❌ Bot crash ho gaya: {e}")
