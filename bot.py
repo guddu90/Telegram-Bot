@@ -1,269 +1,168 @@
 import os
-import threading
-import asyncio
-import uuid
 import re
-import aiohttp
-from flask import Flask
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.constants import ParseMode
+import telebot
 import yt_dlp
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
+import threading
 
-# --- LOCAL ENVIRONMENT SETUP ---
+# .env file se variables load kar rahe hain
 load_dotenv()
+TOKEN = os.getenv('BOT_TOKEN')
 
-# --- FLASK SERVER (Render.com 24/7 Setup) ---
-app = Flask(__name__)
+if not TOKEN:
+    print("❌ BOT_TOKEN nahi mila! Please .env file check karo.")
+    exit()
 
-@app.route('/')
-def health_check():
-    return "[SYSTEM STATUS: ONLINE] ZORK DI Tactical Extraction Node is running at optimal capacity."
+# Bot initialize kar rahe hain
+bot = telebot.TeleBot(TOKEN)
+print("✅ Naya bot successfully start ho gaya hai (yt-dlp + buttons + auto-delete)...")
 
-def run_server():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+# User requests temporarily store karne ke liye dictionary taaki callback data limit cross na ho
+user_requests = {}
 
-# --- BOT CONFIGURATION ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "Hello! 👋 Mujhe Twitter (X) ka koi bhi video link bhejo, main tumhe quality select karne ka option dunga.")
 
-# --- CORE DOWNLOADING FUNCTIONS ---
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    text = message.text
+    chat_id = message.chat.id
+    if not text:
+        return
+    
+    # Twitter ya X link detect karna
+    twitter_regex = r"(https?:\/\/(?:www\.)?(?:twitter\.com|x\.com)\/[a-zA-Z0-9_]+\/status\/[0-9]+)"
+    match = re.search(twitter_regex, text, re.IGNORECASE)
 
-async def fetch_from_cobalt(url):
-    """Bypasses limits using Cobalt API to fetch the absolute best available quality instantly"""
-    api_url = "https://api.cobalt.tools/api/json"
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Origin": "https://cobalt.tools",
-        "Referer": "https://cobalt.tools/"
-    }
-    payload = {
-        "url": url,
-        "vQuality": "max", # Automatically grabs the highest available resolution
-        "filenamePattern": "classic"
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(api_url, json=payload, headers=headers, timeout=15) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("status") in ["redirect", "stream"]:
-                        return data.get("url")
-    except Exception as e:
-        print(f"[COBALT API ERROR]: {e}")
-    return None
+    if match:
+        original_url = match.group(1)
+        wait_msg = bot.reply_to(message, "⏳ Fetching available qualities... please wait.")
 
-def download_with_ytdlp(url, file_name):
-    """Fallback Engine: Uses highly optimized YouTube Spoofing to bypass cloud IP blocks"""
-    opts = {
+        # yt-dlp options (sirf info nikalne ke liye, download nahi)
+        ydl_opts = {
+            'cookiefile': 'cookies.txt', # Tumhari file jo login issues rokegi
+            'quiet': True,
+            'no_warnings': True,
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(original_url, download=False)
+                formats = info.get('formats', [])
+                
+                available_qualities = {}
+                
+                # Formats filter karna jo mp4 hain aur jinme height (resolution) hai
+                for f in formats:
+                    height = f.get('height')
+                    ext = f.get('ext')
+                    format_id = f.get('format_id')
+                    
+                    # Duplicate heights hata kar sirf valid mp4 store kar rahe hain
+                    if height and ext == 'mp4':
+                        available_qualities[f"{height}p"] = format_id
+
+                if not available_qualities:
+                    bot.edit_message_text("❌ Is video me alag-alag qualities nahi mili ya format support nahi kar raha.", chat_id, wait_msg.message_id)
+                    return
+
+                # Callback me poora URL bhejna possible nahi hota (64 byte limit), isliye session me save kar rahe hain
+                user_requests[chat_id] = {
+                    'url': original_url,
+                    'qualities': available_qualities,
+                    'msg_id': wait_msg.message_id
+                }
+
+                # Inline Buttons banana
+                markup = InlineKeyboardMarkup()
+                for quality, f_id in available_qualities.items():
+                    # Callback data me quality bhejenge
+                    button = InlineKeyboardButton(text=quality, callback_data=f"dl_{quality}")
+                    markup.add(button)
+
+                bot.edit_message_text("🎥 Video available hai! Niche se quality select karo:", chat_id, wait_msg.message_id, reply_markup=markup)
+
+        except Exception as e:
+            print(f"❌ yt-dlp Fetch Error: {e}")
+            bot.edit_message_text("❌ Details fetch karne me error aayi. Cookies ya link verify karo.", chat_id, wait_msg.message_id)
+            
+    elif not text.startswith('/'):
+        bot.reply_to(message, "❌ Please sirf valid Twitter (X) ka link hi bhejo.")
+
+# Button click (callback) handle karna
+@bot.callback_query_handler(func=lambda call: call.data.startswith("dl_"))
+def handle_download(call):
+    chat_id = call.message.chat.id
+    quality_selected = call.data.split("_")[1]
+    
+    if chat_id not in user_requests:
+        bot.answer_callback_query(call.id, "❌ Session expire ho gaya hai. Link wapas bhejo.", show_alert=True)
+        return
+    
+    user_data = user_requests[chat_id]
+    original_url = user_data['url']
+    format_id = user_data['qualities'].get(quality_selected)
+    msg_id = user_data['msg_id']
+    
+    if not format_id:
+        bot.answer_callback_query(call.id, "❌ Quality ID nahi mili.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text(f"⏳ Downloading video in {quality_selected}...\nPlease wait, high quality me thoda time lag sakta hai.", chat_id, msg_id)
+    
+    # Download process ko background thread me daal rahe hain taaki bot baki users ke liye block na ho
+    threading.Thread(target=download_and_send_video, args=(chat_id, original_url, format_id, msg_id)).start()
+
+# Asynchronous download aur send function
+def download_and_send_video(chat_id, url, format_id, msg_id):
+    # Ek unique temporary filename bana rahe hain
+    temp_filename = f"temp_video_{chat_id}_{msg_id}.mp4"
+    
+    ydl_opts = {
+        'cookiefile': 'cookies.txt',
+        'format': f"{format_id}+bestaudio/best", # Video ke sath best audio merge karega
+        'outtmpl': temp_filename,
         'quiet': True,
         'no_warnings': True,
-        'noplaylist': True,
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': file_name,
-        'socket_timeout': 15,          # Generous timeout for high-res extraction
-        'retries': 1,                  
-        'extractor_retries': 1,
-        'source_address': '0.0.0.0',   # Forces IPv4 to bypass Render's blocked IPv6
-        'max_filesize': 49.5 * 1024 * 1024, 
-        # CRITICAL FIX: Spoofs the request as coming from official Mobile apps/TV to bypass "Sign in to confirm"
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'tv']
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9'
-        }
     }
-    
-    if os.path.exists('cookies.txt'):
-        opts['cookiefile'] = 'cookies.txt'
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        # Video local drive me download ho rahi hai
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-            return True, None
+            
+        # Download done, ab Telegram par send karna hai
+        bot.edit_message_text("📤 Uploading to Telegram... Lagbhag ho gaya!", chat_id, msg_id)
+        
+        with open(temp_filename, 'rb') as video_file:
+            bot.send_video(chat_id, video_file, caption=f"✅ Downloaded successfully!")
+            
+        # Success ke baad purana processing message delete kar do
+        bot.delete_message(chat_id, msg_id)
+        
     except Exception as e:
-        return False, str(e)
-
-# --- HANDLERS ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = (
-        "📟 `\\[SYSTEM BOOT SEQUENCE INITIATED]`\n"
-        "📡 `\\[CONNECTING TO ZORK DI MAINFRAME...]`\n"
-        "🔐 `\\[SECURE HANDSHAKE: SUCCESS]`\n\n"
-        "Greetings, Operator. I am the *Tactical Media Extraction Node*.\n"
-        "Engineered for high-tier payload retrieval across global network grids.\n\n"
-        "📍 *Directive:* Transmit target coordinates (URL) to initiate immediate extraction."
-    )
-    await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-
-    # ZORK DI Identity Logic
-    identity_keywords = ["who made you", "creator", "naam kya hai", "who are you", "zork di", "banaya kisne", "boss", "command"]
-    if any(keyword in text for keyword in identity_keywords):
-        identity_text = (
-            "🛡️ *\\[CLEARANCE LEVEL VERIFIED]*\n\n"
-            "I am an elite cybernetic extraction protocol, forged by the architects at *ZORK DI*.\n"
-            "My neural processing outpaces civilian models. I exist to execute flawless data retrieval.\n\n"
-            "Awaiting your next directive, Commander."
-        )
-        await update.message.reply_text(identity_text, parse_mode=ParseMode.MARKDOWN)
-        return
-
-    url_pattern = re.search(r'(https?://[^\s]+)', update.message.text)
-    
-    if not url_pattern:
-        await update.message.reply_text(
-            "⚠️ *\\[CRITICAL ALERT]*\nInvalid coordinates detected. Radar scan failed. Please recalibrate.", 
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-
-    url = url_pattern.group(1)
-    
-    if "x.com" in url:
-        url = url.replace("x.com", "twitter.com")
-
-    chat_id = update.message.chat_id
-
-    status_message = await update.message.reply_text(
-        "🎯 *\\[TARGET LOCKED - INSTANT MODE]*\n"
-        "\\[⚙️ COMMAND RECOGNIZED] Auto-detecting maximum available quality...\n"
-        "\\[🔍 BYPASSING] Neutralizing host security layers...",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-    caption_text = (
-        f"✅ *TACTICAL EXTRACTION COMPLETE*\n\n"
-        f"▫️ **Asset Mode:** Max Available Resolution\n"
-        f"▫️ **Security Status:** CLEARED\n\n"
-        f"🛡️ **Commanded by:** ZORK DI"
-    )
-
-    # 1st Attempt: Ultra-Fast API Bypass
-    direct_url = await fetch_from_cobalt(url)
-
-    if direct_url:
+        print(f"❌ Download Error: {e}")
         try:
-            await context.bot.send_video(
-                chat_id=chat_id,
-                video=direct_url,
-                caption=caption_text,
-                parse_mode=ParseMode.MARKDOWN,
-                read_timeout=120,
-                write_timeout=120
-            )
-            await status_message.delete()
-            return
-        except Exception as e:
-            print(f"[DIRECT UPLOAD FAILED]: {e}. Falling back to core extraction.")
+            bot.edit_message_text("❌ Download ya upload me error aa gayi. Shayad server timeout ya FFmpeg missing hai.", chat_id, msg_id)
+        except:
+            pass
+    finally:
+        # ✅ STORAGE BACHANE KA MAIN LOGIC
+        # Jaise hi video send ho jaye ya error aaye, local file ko delete kar do
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+            print(f"🗑️ System drive ko full hone se bacha liya. File delete kar di: {temp_filename}")
+        
+        # Memory se user session clear kar do
+        if chat_id in user_requests:
+            del user_requests[chat_id]
 
-    # 2nd Attempt: yt-dlp Deep Extraction Fallback (Bypass Mode Active)
-    await context.bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=status_message.message_id,
-        text="⚠️ *\\[API EVADED]*\nTarget platform is resisting. Initiating deep extraction via Mobile App Spoofing...\n_Please hold, compiling maximum available format..._",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-    unique_id = str(uuid.uuid4())[:8]
-    file_name = f'payload_{chat_id}_{unique_id}.mp4'
-
+# Bot ko continuously chalane ke liye
+if __name__ == "__main__":
     try:
-        success, error_msg = await asyncio.wait_for(
-            asyncio.to_thread(download_with_ytdlp, url, file_name), timeout=60.0
-        )
-    except asyncio.TimeoutError:
-        await context.bot.edit_message_text(
-            chat_id=chat_id, 
-            message_id=status_message.message_id, 
-            text="❌ *\\[DOWNLOAD TIMEOUT]*\nHost server is tarpitting the connection or file is too massive. Operation force-aborted.",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        if os.path.exists(file_name):
-            os.remove(file_name)
-        return
-
-    if success and os.path.exists(file_name):
-        file_size_mb = os.path.getsize(file_name) / (1024 * 1024)
-
-        if file_size_mb > 49.5:
-            await context.bot.edit_message_text(
-                chat_id=chat_id, 
-                message_id=status_message.message_id, 
-                text=f"🛑 *\\[RESTRICTION ENFORCED]*\nPayload mass is {file_size_mb:.1f} MB. Telegram restricts transmissions to 50 MB.\n_Mission Aborted._",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            os.remove(file_name)
-            return
-
-        await context.bot.edit_message_text(
-            chat_id=chat_id, 
-            message_id=status_message.message_id, 
-            text="\\[📡 ESTABLISHING UPLINK]\nAES-256 applied. Uploading payload to secure Telegram grid...",
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-        try:
-            with open(file_name, 'rb') as media_file:
-                await context.bot.send_video(
-                    chat_id=chat_id,
-                    video=media_file,
-                    caption=caption_text + f"\n▫️ **Payload Mass:** {file_size_mb:.1f} MB",
-                    parse_mode=ParseMode.MARKDOWN,
-                    read_timeout=120, 
-                    write_timeout=120 
-                )
-            await status_message.delete()
-        except Exception as e:
-            await context.bot.edit_message_text(
-                chat_id=chat_id, 
-                message_id=status_message.message_id, 
-                text=f"❌ *\\[UPLINK FAILED]*\nSignal interference during payload delivery.\n\nError: {e}",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        finally:
-            if os.path.exists(file_name):
-                os.remove(file_name)
-    else:
-        # User-friendly clean up for the strict sign-in errors
-        clean_error = "Platform Blocked Connection (Sign-in Required)" if "Sign in to confirm" in str(error_msg) else error_msg
-        await context.bot.edit_message_text(
-            chat_id=chat_id, 
-            message_id=status_message.message_id, 
-            text=f"❌ *\\[TARGET EVASIVE]*\nPlatform defense systems blocked the request.\n\n_Diagnostic Code: {clean_error}_",
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-def main():
-    if not BOT_TOKEN:
-        print("❌ [CRITICAL SYSTEM FAILURE]: BOT_TOKEN is missing!")
-        return
-
-    if os.path.exists('cookies.txt'):
-        print("✅ [SYSTEM CHECK]: cookies.txt FOUND successfully in the directory.")
-    else:
-        print("⚠️ [SYSTEM WARNING]: cookies.txt NOT FOUND! High-res YouTube bypass might be restricted.")
-
-    server_thread = threading.Thread(target=run_server)
-    server_thread.daemon = True
-    server_thread.start()
-
-    application = Application.builder().token(BOT_TOKEN).pool_timeout(60).connect_timeout(60).read_timeout(120).write_timeout(120).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("🛡️ [ZORK DI MAINFRAME ONLINE] Anti-Block Mobile Spoof Engine Active...")
-    application.run_polling(drop_pending_updates=True)
-
-if __name__ == '__main__':
-    main()
+        bot.infinity_polling()
+    except Exception as e:
+        print(f"❌ Bot crash ho gaya: {e}")
